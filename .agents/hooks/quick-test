@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 # Quick tests, run by every branch build (PC and fallback) before building: the size-planning
 # tests in tests/EngineTest.cs, which need no video and no ffmpeg. Windows only.
+# csc gets Windows paths: it reads "tests/x.cs" as "x.cs".
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 [ "${OS:-}" = Windows_NT ] || { echo "cap-compress's tests run only on Windows." >&2; exit 1; }
 fw="$(cygpath -u "$WINDIR")/Microsoft.NET/Framework64/v4.0.30319"
 mkdir -p build/tests
-"$fw/csc.exe" -nologo -out:build/tests/EngineTest.exe tests/EngineTest.cs src/Engine.cs \
+"$fw/csc.exe" -nologo -out:build\\tests\\EngineTest.exe tests\\EngineTest.cs src\\Engine.cs \
   "-r:$(cygpath -w "$fw")\\System.IO.Compression.dll" "-r:$(cygpath -w "$fw")\\System.IO.Compression.FileSystem.dll"
 build/tests/EngineTest.exe

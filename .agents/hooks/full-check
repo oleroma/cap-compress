@@ -11,7 +11,8 @@ fww="$(cygpath -w "$fw")"
 refs=(-r:System.Windows.Forms.dll -r:System.Drawing.dll
   "-r:$fww\\System.IO.Compression.dll" "-r:$fww\\System.IO.Compression.FileSystem.dll")
 mkdir -p build/check
+# csc gets Windows paths: it reads "src/x.cs" as "x.cs".
 csc() { "$fw/csc.exe" -nologo -warnaserror+ "${refs[@]}" "$@"; }
-csc -target:winexe -out:build/check/cap-compress.exe src/Engine.cs src/Theme.cs src/MainForm.cs
-csc -out:build/check/EngineTest.exe tests/EngineTest.cs src/Engine.cs
-csc -main:CapCompress.UiTest -out:build/check/UiTest.exe tests/UiTest.cs src/Engine.cs src/Theme.cs src/MainForm.cs
+csc -target:winexe -out:build\\check\\cap-compress.exe src\\Engine.cs src\\Theme.cs src\\MainForm.cs
+csc -out:build\\check\\EngineTest.exe tests\\EngineTest.cs src\\Engine.cs
+csc -main:CapCompress.UiTest -out:build\\check\\UiTest.exe tests\\UiTest.cs src\\Engine.cs src\\Theme.cs src\\MainForm.cs
