@@ -20,6 +20,11 @@ The output is saved next to the original as `name_compressed.mp4`. If an encode
 comes out over the target, it retries at a lower bitrate; nothing is saved if it
 can't fit.
 
+The app remembers your last settings between restarts: target size, Auto or
+manual resolution, frame rate, encoder, Remove audio, and the window's size and
+place. Trim starts over for each video. They're kept in
+`%LOCALAPPDATA%\CapCompress\settings.txt`; delete it to go back to the defaults.
+
 ## ffmpeg
 
 The app looks for `ffmpeg.exe` and `ffprobe.exe` next to itself, in an `ffmpeg`
@@ -44,4 +49,6 @@ desktop.
 - `tests\EngineTest.cs` (compile with `src\Engine.cs`): size planning, and with
   `<video> <out dir>`, real encodes with x264, NVENC, trim, mute and cancel.
 - `tests\UiTest.cs` (compile with all of `src\`, `/main:CapCompress.UiTest`):
-  drives the real window in-process, `<video> <screenshot dir>`.
+  drives the real window in-process, `<video> <screenshot dir>`. Its windows
+  open off-screen without taking focus, and it keeps its settings in
+  `<screenshot dir>\data`, so yours are never touched.

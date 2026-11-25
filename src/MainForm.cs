@@ -56,6 +56,7 @@ namespace CapCompress
         int manualShort, manualFps;
         readonly string startupFile;
         readonly float scale;
+        readonly Prefs prefs = Prefs.Load();
 
         static Label Text0() { return new Label { AutoSize = true, Anchor = AnchorStyles.Left, Text = "" }; }
         static Slider Bar() { return new Slider { Dock = DockStyle.Fill, Height = Theme.S(34), Margin = new Padding(Theme.S(10), 0, Theme.S(10), 0) }; }
@@ -67,6 +68,7 @@ namespace CapCompress
             using (var g = CreateGraphics()) scale = g.DpiX / 96f;
             ClientSize = new Size(S(660), S(418));
             MinimumSize = new Size(S(580), S(456));
+            RestoreWindow();
 
             var grid = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 4, Padding = new Padding(S(18), S(16), S(18), S(16)), AutoScroll = true };
             grid.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
@@ -148,13 +150,14 @@ namespace CapCompress
             AcceptButton = compress;
 
             EventHandler changed = (o, e) => { if (!updating) Recalculate(); };
-            target.Scroll += (o, e) => { targetMB = target.Value / 10.0; Recalculate(); };
+            // What the user picks is remembered between restarts (see Prefs).
+            target.Scroll += (o, e) => { targetMB = target.Value / 10.0; prefs.TargetMB = targetMB; Recalculate(); };
             trim.Scroll += (o, e) => Recalculate();
-            res.Scroll += (o, e) => { manualShort = plan.Rungs[res.Value]; Recalculate(); };
-            fps.Scroll += (o, e) => { manualFps = fps.Value; Recalculate(); };
-            autoRes.CheckedChanged += (o, e) => { if (plan != null) manualShort = plan.Short; changed(o, e); };
-            mute.CheckedChanged += changed;
-            encoder.SelectedIndexChanged += changed;
+            res.Scroll += (o, e) => { manualShort = plan.Rungs[res.Value]; prefs.Short = manualShort; Recalculate(); };
+            fps.Scroll += (o, e) => { manualFps = fps.Value; prefs.Fps = manualFps; Recalculate(); };
+            autoRes.CheckedChanged += (o, e) => { if (plan != null) manualShort = plan.Short; if (!updating) prefs.AutoRes = autoRes.Checked; changed(o, e); };
+            mute.CheckedChanged += (o, e) => { if (!updating) prefs.Mute = mute.Checked; changed(o, e); };
+            encoder.SelectedIndexChanged += (o, e) => { if (!updating) prefs.Nvenc = encoder.SelectedIndex == 1; changed(o, e); };
 
             browse.Click += (o, e) => Browse();
             compress.Click += (o, e) => StartCompress();
@@ -162,12 +165,36 @@ namespace CapCompress
             showFile.Click += (o, e) => { if (lastOutput != null) Process.Start("explorer.exe", "/select,\"" + lastOutput + "\""); };
             AcceptDrops(this);
             Shown += (o, e) => InitTools();
-            FormClosing += (o, e) => { if (cancel != null) cancel.Cancel(); };
+            FormClosing += (o, e) => { if (cancel != null) cancel.Cancel(); SaveWindow(); prefs.Save(); };
 
             SetInputs();
         }
 
         int S(int x) { return (int)(x * scale); }
+
+        // Puts the window back where it was, unless that's no longer on any screen.
+        void RestoreWindow()
+        {
+            var b = prefs.Window;
+            if (b.Width < MinimumSize.Width || b.Height < MinimumSize.Height) return;
+            bool visible = false;
+            foreach (var screen in Screen.AllScreens)
+            {
+                var common = Rectangle.Intersect(screen.WorkingArea, b);
+                if (common.Width >= S(100) && common.Height >= S(50)) visible = true;
+            }
+            if (!visible) return;
+            StartPosition = FormStartPosition.Manual;
+            Bounds = b;
+            if (prefs.Maximized) WindowState = FormWindowState.Maximized;
+        }
+
+        void SaveWindow()
+        {
+            if (WindowState == FormWindowState.Minimized && prefs.Window.Width > 0) return;
+            prefs.Window = WindowState == FormWindowState.Normal ? Bounds : RestoreBounds;
+            prefs.Maximized = WindowState == FormWindowState.Maximized;
+        }
 
         void AcceptDrops(Control c)
         {
@@ -252,7 +279,7 @@ namespace CapCompress
             encoder.Items.Clear();
             encoder.Items.Add("x264 · best quality");
             if (Engine.HasEncoder(ffmpeg, "h264_nvenc")) encoder.Items.Add("NVENC · fast");
-            encoder.SelectedIndex = 0;
+            encoder.SelectedIndex = prefs.Nvenc && encoder.Items.Count > 1 ? 1 : 0;
             updating = false;
             status.Text = "Ready.";
             if (startupFile != null) LoadVideo(startupFile);
@@ -297,13 +324,14 @@ namespace CapCompress
                 video.Width, video.Height, video.Fps, Time(video.Duration), SizeText(video.SizeBytes));
             int tenths = (int)Math.Round(video.Duration * 10);
             updating = true;
-            autoRes.Checked = true;
-            mute.Checked = false;
+            autoRes.Checked = prefs.AutoRes;
+            mute.Checked = prefs.Mute;
             trim.Reset(tenths, Math.Min(10, tenths));
             updating = false;
-            manualShort = video.ShortSide;
-            manualFps = Math.Min(24, video.MaxFps);
-            targetMB = 10;
+            // Last used settings; the plan fits them to this video.
+            manualShort = prefs.Short > 0 ? prefs.Short : video.ShortSide;
+            manualFps = Math.Min(prefs.Fps > 0 ? prefs.Fps : 24, video.MaxFps);
+            targetMB = prefs.TargetMB;
             showFile.Visible = false;
             progress.Value = 0;
             status.Text = "";
@@ -391,6 +419,7 @@ namespace CapCompress
         {
             if (video == null || plan == null || !plan.CanReduce || busy) return;
             var settings = ReadSettings();
+            prefs.Save();
             var runPlan = plan;
             var source = video;
             string output = Engine.OutputPath(source.Path);
@@ -452,6 +481,91 @@ namespace CapCompress
         static string SizeText(long bytes)
         {
             return string.Format("{0:0.0} MB", bytes / 1048576.0);
+        }
+    }
+
+    // The settings last used, kept in %LOCALAPPDATA%\CapCompress\settings.txt as key=value lines.
+    // CAPCOMPRESS_DATA moves the folder (the tests use it). Trim isn't kept: it belongs to one video.
+    class Prefs
+    {
+        public double TargetMB = 10;
+        public bool AutoRes = true, Nvenc, Mute;
+        public int Short, Fps;          // 0 until the user picks one
+        public Rectangle Window;
+        public bool Maximized;
+
+        public static string Dir
+        {
+            get
+            {
+                return Environment.GetEnvironmentVariable("CAPCOMPRESS_DATA")
+                    ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "CapCompress");
+            }
+        }
+
+        static string FilePath { get { return Path.Combine(Dir, "settings.txt"); } }
+
+        static bool Int(string s, out int i) { return int.TryParse(s, NumberStyles.Integer, CultureInfo.InvariantCulture, out i); }
+
+        public static Prefs Load()
+        {
+            var p = new Prefs();
+            try
+            {
+                if (!File.Exists(FilePath)) return p;
+                foreach (string line in File.ReadAllLines(FilePath))
+                {
+                    int eq = line.IndexOf('=');
+                    if (eq <= 0) continue;
+                    string key = line.Substring(0, eq).Trim(), value = line.Substring(eq + 1).Trim();
+                    double d;
+                    int i;
+                    switch (key)
+                    {
+                        case "TargetMB": if (double.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out d) && d > 0) p.TargetMB = d; break;
+                        case "AutoRes": p.AutoRes = value != "false"; break;
+                        case "Short": if (Int(value, out i) && i > 0) p.Short = i; break;
+                        case "Fps": if (Int(value, out i) && i > 0) p.Fps = i; break;
+                        case "Encoder": p.Nvenc = value == "nvenc"; break;
+                        case "Mute": p.Mute = value == "true"; break;
+                        case "Maximized": p.Maximized = value == "true"; break;
+                        case "Window":
+                            var n = value.Split(',');
+                            int x, y, w, h;
+                            if (n.Length == 4 && Int(n[0], out x) && Int(n[1], out y) && Int(n[2], out w) && Int(n[3], out h))
+                                p.Window = new Rectangle(x, y, w, h);
+                            break;
+                    }
+                }
+            }
+            catch (Exception) { }   // unreadable settings just mean defaults
+            return p;
+        }
+
+        public void Save()
+        {
+            try
+            {
+                var inv = CultureInfo.InvariantCulture;
+                var lines = new System.Collections.Generic.List<string>
+                {
+                    "TargetMB=" + TargetMB.ToString("0.0", inv),
+                    "AutoRes=" + (AutoRes ? "true" : "false"),
+                    "Short=" + Short.ToString(inv),
+                    "Fps=" + Fps.ToString(inv),
+                    "Encoder=" + (Nvenc ? "nvenc" : "x264"),
+                    "Mute=" + (Mute ? "true" : "false"),
+                    "Maximized=" + (Maximized ? "true" : "false")
+                };
+                if (Window.Width > 0)
+                    lines.Add(string.Format(inv, "Window={0},{1},{2},{3}", Window.X, Window.Y, Window.Width, Window.Height));
+                Directory.CreateDirectory(Dir);
+                string temp = FilePath + ".tmp";
+                File.WriteAllLines(temp, lines.ToArray());
+                if (File.Exists(FilePath)) File.Replace(temp, FilePath, null);
+                else File.Move(temp, FilePath);
+            }
+            catch (Exception) { }   // not being able to save settings shouldn't stop anything
         }
     }
 }

@@ -142,8 +142,75 @@ namespace CapCompress
             Check(Txt("status").StartsWith("Done"), "compress finished from the window");
             Check(Get<Btn>("showFile").Visible, "show file button appears");
 
-            Console.WriteLine(failed == 0 ? "ALL PASSED" : failed + " FAILED");
+            // Settings to come back after a restart (checked by Remembered).
+            Get<Toggle>("mute").Checked = true;
+            var enc = Get<Segmented>("encoder");
+            if (enc.Items.Count > 1) enc.SelectedIndex = 1;
+            Get<Toggle>("autoRes").Checked = false;
+            Move(target, 50);
+            Move(fps, 30);
+            Move(res, 1);
+            rememberedTarget = Lead(Txt("targetValue"));
+            rememberedFps = fps.Value;
+            rememberedRes = Lead(Txt("resValue"));
+            rememberedNvenc = enc.SelectedIndex == 1;
+            State("before restart");
+
             form.Close();
+        }
+
+        // The value without its "(max ...)", which depends on the trim.
+        static string Lead(string text) { int i = text.IndexOf('('); return (i < 0 ? text : text.Substring(0, i)).Trim(); }
+
+        static int rememberedFps;
+        static string rememberedRes, rememberedTarget;
+        static bool rememberedNvenc;
+
+        // A fresh window on the same video picks up the last settings.
+        static async Task Remembered()
+        {
+            await Task.Delay(2500);
+            State("after restart");
+            Check(!Get<Toggle>("autoRes").Checked, "restart keeps Auto resolution off");
+            Check(Lead(Txt("targetValue")) == rememberedTarget, "restart keeps the target size: " + Txt("targetValue"));
+            Check(Get<Slider>("fps").Value == rememberedFps, "restart keeps the frame rate: " + Get<Slider>("fps").Value);
+            Check(Lead(Txt("resValue")) == rememberedRes, "restart keeps the resolution: " + Txt("resValue"));
+            Check(Get<Toggle>("mute").Checked, "restart keeps Remove audio");
+            Check((Get<Segmented>("encoder").SelectedIndex == 1) == rememberedNvenc, "restart keeps the encoder");
+            Check(Txt("trimValue").StartsWith("0:00.0"), "trim starts over for each video");
+            form.Close();
+        }
+
+        // Off-screen and never activated, so the tests leave the desktop alone.
+        class QuietForm : MainForm
+        {
+            public QuietForm(string file) : base(file) { StartPosition = FormStartPosition.Manual; Location = new Point(-32000, -32000); ShowInTaskbar = false; }
+            protected override bool ShowWithoutActivation { get { return true; } }
+        }
+
+        static void Run(string video, Func<Task> script)
+        {
+            form = new QuietForm(video);
+            form.Shown += async (o, e) =>
+            {
+                try { await script(); }
+                catch (Exception ex) { Console.WriteLine("CRASH " + ex); failed++; form.Close(); }
+            };
+            Application.Run(form);
+        }
+
+        static void WindowPlace(string data)
+        {
+            var area = Screen.PrimaryScreen.WorkingArea;
+            var want = new Rectangle(area.X + 40, area.Y + 30, 900, 700);
+            System.IO.File.WriteAllText(System.IO.Path.Combine(data, "settings.txt"),
+                string.Format("Window={0},{1},{2},{3}\r\nMaximized=false\r\n", want.X, want.Y, want.Width, want.Height));
+            using (var f = new MainForm(null)) Check(f.Bounds == want, "window comes back where it was: " + f.Bounds);
+            System.IO.File.WriteAllText(System.IO.Path.Combine(data, "settings.txt"), "Window=-30000,-30000,900,700\r\n");
+            using (var f = new MainForm(null)) Check(f.Left > -30000, "a window no longer on any screen isn't restored off-screen");
+            System.IO.File.WriteAllText(System.IO.Path.Combine(data, "settings.txt"), "TargetMB=nonsense\r\nFps=\r\nWindow=1,2\r\n");
+            using (var f = new MainForm(null)) Check(f.Left > -30000, "broken settings fall back to defaults");
+            System.IO.File.Delete(System.IO.Path.Combine(data, "settings.txt"));
         }
 
         [STAThread]
@@ -152,13 +219,16 @@ namespace CapCompress
             Thread.CurrentThread.CurrentCulture = System.Globalization.CultureInfo.InvariantCulture;
             Application.EnableVisualStyles();
             shots = args[1];
-            form = new MainForm(args[0]);
-            form.Shown += async (o, e) =>
-            {
-                try { await Script(); }
-                catch (Exception ex) { Console.WriteLine("CRASH " + ex); failed++; form.Close(); }
-            };
-            Application.Run(form);
+            // Settings go to a folder of the test's own, starting empty, so the user's are never touched.
+            string data = System.IO.Path.Combine(shots, "data");
+            if (System.IO.Directory.Exists(data)) System.IO.Directory.Delete(data, true);
+            System.IO.Directory.CreateDirectory(data);
+            Environment.SetEnvironmentVariable("CAPCOMPRESS_DATA", data);
+            WindowPlace(data);
+            Run(args[0], Script);
+            Check(System.IO.File.Exists(System.IO.Path.Combine(data, "settings.txt")), "closing saves the settings");
+            Run(args[0], Remembered);
+            Console.WriteLine(failed == 0 ? "ALL PASSED" : failed + " FAILED");
             return failed;
         }
     }
