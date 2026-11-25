@@ -58,6 +58,8 @@ static class EngineTest
         Check(free.NoLimit && free.Short == 1080 && free.Fps == 60 && free.ResCap == 1080 && free.FpsCap == 60, "No limit keeps the source resolution and fps: " + free.Short + "p" + free.Fps);
         var freeManual = Engine.MakePlan(v, new Settings { NoLimit = true, AutoRes = false, Short = 720, AutoFps = false, Fps = 30 });
         Check(freeManual.Short == 720 && freeManual.Fps == 30, "No limit still takes a manual pick: " + freeManual.Short + "p" + freeManual.Fps);
+        var freeRate = Engine.MakePlan(v, new Settings { NoLimit = true, AutoBitrate = false, VideoKbps = 500 });
+        Check(freeRate.VideoKbps == 500 && freeRate.Short < 1080, "No limit with a bitrate picked by hand caps resolution: " + freeRate.Short + "p" + freeRate.Fps);
         Check(Engine.QualityArgs(new Settings()).Contains("-crf") && Engine.QualityArgs(new Settings { Nvenc = true }).Contains("-cq"), "No limit encodes at constant quality");
 
         // ffmpeg arguments: HDR tone mapping and mixing several audio tracks.

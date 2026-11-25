@@ -38,6 +38,9 @@ namespace CapCompress
         readonly Toggle mute = new Toggle("Remove audio");
         readonly Toggle mixAudio = new Toggle("Mix all tracks") { Checked = true, Visible = false };
         readonly Segmented encoder = new Segmented();
+        readonly Slider rate = Bar();
+        readonly Label rateValue = Text0();
+        readonly Toggle autoRate = new Toggle("Auto") { Checked = true };
         readonly Label bitrate = Text0();
         readonly ProgressLine progress = new ProgressLine { Anchor = AnchorStyles.Left | AnchorStyles.Right, Height = Theme.S(6) };
         readonly Label status = Text0();
@@ -59,6 +62,10 @@ namespace CapCompress
         bool probing;
         double targetMB = 10;
         bool noLimit;       // Target size at its last stop, past the largest size
+        int manualKbps;     // video bitrate picked by hand, used at No limit with Auto off
+        // The Bitrate slider's stops, in kbps: even steps on a log scale.
+        static readonly int[] Rates = { 250, 300, 400, 500, 600, 800, 1000, 1200, 1500, 2000, 2500, 3000, 4000, 5000,
+                                        6000, 8000, 10000, 12000, 15000, 20000, 25000, 30000, 40000, 50000 };
 
         int manualShort, manualFps;
         readonly string startupFile;
@@ -124,35 +131,34 @@ namespace CapCompress
             grid.Controls.Add(mute, 2, 5);
             grid.Controls.Add(mixAudio, 3, 5);
 
-            var rateLabel = Text0();
-            rateLabel.Text = "Bitrate";
-            rateLabel.ForeColor = Theme.Dim;
-            bitrate.Margin = new Padding(S(10), S(6), 0, S(6));
+            // Set by hand only at No limit; with a size, the size decides it and the row just shows it.
+            AddRow(grid, 6, "Bitrate", rate, rateValue, autoRate);
+            bitrate.Margin = new Padding(S(10), S(2), 0, S(6));
+            bitrate.ForeColor = Theme.Dim;
             status.ForeColor = Theme.Dim;
-            grid.Controls.Add(rateLabel, 0, 6);
-            grid.Controls.Add(bitrate, 1, 6);
+            grid.Controls.Add(bitrate, 1, 7);
             grid.SetColumnSpan(bitrate, 3);
 
             progress.Margin = new Padding(0, S(8), 0, S(2));
-            grid.Controls.Add(progress, 0, 7);
+            grid.Controls.Add(progress, 0, 8);
             grid.SetColumnSpan(progress, 4);
             status.AutoSize = false;
             status.Dock = DockStyle.Fill;
             status.AutoEllipsis = true;
             status.TextAlign = ContentAlignment.MiddleLeft;
-            grid.Controls.Add(status, 0, 8);
+            grid.Controls.Add(status, 0, 9);
             grid.SetColumnSpan(status, 4);
 
             var buttons = new FlowLayoutPanel { FlowDirection = FlowDirection.RightToLeft, Dock = DockStyle.Fill, AutoSize = true };
             buttons.Controls.Add(compress);
             buttons.Controls.Add(cancelButton);
             buttons.Controls.Add(showFile);
-            grid.Controls.Add(buttons, 0, 9);
+            grid.Controls.Add(buttons, 0, 10);
             grid.SetColumnSpan(buttons, 4);
 
-            for (int i = 0; i < 10; i++)
-                grid.RowStyles.Add(new RowStyle(i == 8 ? SizeType.Percent : SizeType.AutoSize, 100));
-            grid.RowCount = 10;
+            for (int i = 0; i < 11; i++)
+                grid.RowStyles.Add(new RowStyle(i == 9 ? SizeType.Percent : SizeType.AutoSize, 100));
+            grid.RowCount = 11;
 
             AcceptButton = compress;
 
@@ -173,6 +179,8 @@ namespace CapCompress
             autoRes.CheckedChanged += (o, e) => { if (plan != null) manualShort = plan.Short; if (!updating) prefs.AutoRes = autoRes.Checked; changed(o, e); };
             autoFps.CheckedChanged += (o, e) => { if (plan != null) manualFps = plan.Fps; if (!updating) prefs.AutoFps = autoFps.Checked; changed(o, e); };
             mute.CheckedChanged += (o, e) => { if (!updating) prefs.Mute = mute.Checked; changed(o, e); };
+            rate.Scroll += (o, e) => { manualKbps = Rates[rate.Value]; prefs.VideoKbps = manualKbps; Recalculate(); };
+            autoRate.CheckedChanged += (o, e) => { if (!updating) prefs.AutoBitrate = autoRate.Checked; changed(o, e); };
             mixAudio.CheckedChanged += (o, e) => { if (!updating) prefs.MixAudio = mixAudio.Checked; changed(o, e); };
             encoder.SelectedIndexChanged += (o, e) => { if (!updating) prefs.Nvenc = encoder.SelectedIndex == 1; changed(o, e); };
 
@@ -415,6 +423,7 @@ namespace CapCompress
             autoFps.Checked = prefs.AutoFps;
             mute.Checked = prefs.Mute;
             mixAudio.Checked = prefs.MixAudio;
+            autoRate.Checked = prefs.AutoBitrate;
             mixAudio.Visible = video.AudioTracks > 1;
             trim.Reset(tenths, Math.Min(10, tenths));
             updating = false;
@@ -423,6 +432,9 @@ namespace CapCompress
             manualFps = Math.Min(prefs.Fps > 0 ? prefs.Fps : 24, video.MaxFps);
             targetMB = prefs.TargetMB;
             noLimit = prefs.NoLimit;
+            // Until one is picked, the bitrate starts near the source's.
+            manualKbps = prefs.VideoKbps > 0 ? prefs.VideoKbps
+                : Rates[NearestRate((int)(video.SizeBytes * 8 / video.Duration / 1000) - (video.HasAudio ? 128 : 0))];
             Recalculate();
         }
 
@@ -433,6 +445,8 @@ namespace CapCompress
             {
                 TargetMB = targetMB,
                 NoLimit = noLimit,
+                AutoBitrate = autoRate.Checked,
+                VideoKbps = manualKbps,
                 TrimStart = trim.Low / 10.0,
                 TrimEnd = trim.High >= tenths ? 0 : trim.High / 10.0,
                 AutoRes = autoRes.Checked,
@@ -465,6 +479,9 @@ namespace CapCompress
             res.Value = plan.Rungs.IndexOf(plan.Short);
             fps.SetRange(plan.MinFps, video.MaxFps);
             fps.Value = plan.Fps;
+            bool quality = plan.NoLimit && autoRate.Checked;
+            rate.SetRange(0, Rates.Length - 1);
+            rate.Value = NearestRate(quality ? manualKbps : plan.VideoKbps);
             updating = false;
 
             targetValue.Text = plan.NoLimit ? "No limit"
@@ -472,10 +489,15 @@ namespace CapCompress
             trimValue.Text = string.Format("{0} – {1}  (keeps {2})", Time(trim.Low / 10.0), Time(trim.High / 10.0), Time(plan.Kept));
             resValue.Text = string.Format("{0}x{1}  (max {2}p)", plan.OutLong, plan.Short, plan.ResCap);
             fpsValue.Text = string.Format("{0} fps  (max {1})", plan.Fps, plan.FpsCap);
-            if (plan.NoLimit)
-                bitrate.Text = string.Format("Constant quality ({0} {1}), {2}; the size is whatever it comes out at",
-                    encoder.SelectedIndex == 1 ? "CQ" : "CRF", encoder.SelectedIndex == 1 ? Engine.Cq : Engine.Crf,
-                    plan.AudioKbps > 0 ? "audio " + plan.AudioKbps + " kbps" : "no audio");
+            string audio = plan.AudioKbps > 0 ? "audio " + plan.AudioKbps + " kbps" : "no audio";
+            rateValue.Text = quality
+                ? string.Format("Auto ({0} {1})", encoder.SelectedIndex == 1 ? "CQ" : "CRF", encoder.SelectedIndex == 1 ? Engine.Cq : Engine.Crf)
+                : string.Format("{0} kbps", plan.VideoKbps);
+            if (quality)
+                bitrate.Text = "Constant quality, " + audio + "; the size is whatever it comes out at";
+            else if (plan.NoLimit)
+                bitrate.Text = string.Format("Video {0} kbps, {1}; about {2:0.0} MB", plan.VideoKbps, audio,
+                    (plan.VideoKbps + plan.AudioKbps) * 1000.0 * plan.Kept / 8 / 1048576);
             else bitrate.Text = plan.AudioKbps > 0
                 ? string.Format("Video {0} kbps, audio {1} kbps", plan.VideoKbps, plan.AudioKbps)
                 : string.Format("Video {0} kbps, no audio", plan.VideoKbps);
@@ -501,6 +523,8 @@ namespace CapCompress
             fps.Enabled = canReduce && !autoFps.Checked && video.MaxFps > plan.MinFps;
             mute.Enabled = ready && video.HasAudio;
             mixAudio.Enabled = ready && video.AudioTracks > 1 && !mute.Checked;
+            autoRate.Enabled = canReduce && plan.NoLimit;
+            rate.Enabled = canReduce && plan.NoLimit && !autoRate.Checked;
             encoder.Enabled = ready;
             compress.Enabled = canReduce;
             cancelButton.Enabled = busy;
@@ -569,6 +593,14 @@ namespace CapCompress
             worker.Start();
         }
 
+        static int NearestRate(int kbps)
+        {
+            int best = 0;
+            for (int i = 0; i < Rates.Length; i++)
+                if (Math.Abs(Rates[i] - kbps) < Math.Abs(Rates[best] - kbps)) best = i;
+            return best;
+        }
+
         static string Time(double seconds)
         {
             var t = TimeSpan.FromSeconds(seconds);
@@ -588,7 +620,8 @@ namespace CapCompress
     class Prefs
     {
         public double TargetMB = 10;
-        public bool AutoRes = true, AutoFps, Nvenc, Mute, MixAudio = true, NoLimit;
+        public bool AutoRes = true, AutoFps, Nvenc, Mute, MixAudio = true, NoLimit, AutoBitrate = true;
+        public int VideoKbps;           // 0 until the user picks one
         public int Short, Fps;          // 0 until the user picks one
         public Rectangle Window;
         public bool Maximized;
@@ -626,6 +659,8 @@ namespace CapCompress
                         case "AutoFps": p.AutoFps = value == "true"; break;
                         case "MixAudio": p.MixAudio = value != "false"; break;
                         case "NoLimit": p.NoLimit = value == "true"; break;
+                        case "AutoBitrate": p.AutoBitrate = value != "false"; break;
+                        case "VideoKbps": if (Int(value, out i) && i > 0) p.VideoKbps = i; break;
                         case "Short": if (Int(value, out i) && i > 0) p.Short = i; break;
                         case "Fps": if (Int(value, out i) && i > 0) p.Fps = i; break;
                         case "Encoder": p.Nvenc = value == "nvenc"; break;
@@ -660,6 +695,8 @@ namespace CapCompress
                     "Mute=" + (Mute ? "true" : "false"),
                     "MixAudio=" + (MixAudio ? "true" : "false"),
                     "NoLimit=" + (NoLimit ? "true" : "false"),
+                    "AutoBitrate=" + (AutoBitrate ? "true" : "false"),
+                    "VideoKbps=" + VideoKbps.ToString(inv),
                     "Maximized=" + (Maximized ? "true" : "false")
                 };
                 if (Window.Width > 0)

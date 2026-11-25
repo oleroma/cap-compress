@@ -88,9 +88,20 @@ namespace CapCompress
             Check(Txt("targetValue") == "No limit", "the last stop of Target size is No limit");
             Check(fps.Value == video.MaxFps && Txt("resValue").StartsWith(string.Format("{0}x{1}", video.LongSide / 2 * 2, video.ShortSide / 2 * 2)),
                   "No limit allows the source resolution and fps: " + Txt("resValue") + ", " + fps.Value);
+            var rate = Get<Slider>("rate");
+            var autoRate = Get<Toggle>("autoRate");
+            Check(autoRate.Enabled && !rate.Enabled && Txt("rateValue").StartsWith("Auto"), "No limit offers Auto bitrate, constant quality by default");
+            autoRate.Checked = false;
+            Check(rate.Enabled, "unticking Auto bitrate at No limit enables the slider");
+            Move(rate, 0);
+            State("no limit, 250 kbps");
+            Check(Txt("rateValue") == "250 kbps" && Txt("bitrate").Contains("about"), "a hand-picked bitrate shows the size it gives: " + Txt("bitrate"));
+            Check(!Txt("resValue").StartsWith(string.Format("{0}x", video.LongSide / 2 * 2)) || video.ShortSide <= 360, "a low bitrate caps the resolution: " + Txt("resValue"));
+            autoRate.Checked = true;
             Move(target, target.Maximum - 1);
             State("target max");
             Check(target.Value / 10.0 < video.SizeBytes / 1048576.0, "largest size stops below source size");
+            Check(!autoRate.Enabled && !rate.Enabled, "with a size set, the size decides the bitrate");
 
             Move(target, int.MinValue);
             State("target min");

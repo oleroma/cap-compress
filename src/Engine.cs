@@ -37,7 +37,9 @@ namespace CapCompress
         public int Fps;          // used when AutoFps is off
         public bool Nvenc, Mute;
         public bool MixAudio = true;   // with several audio tracks, mix them all instead of keeping the first
-        public bool NoLimit;           // no target size: encode at constant quality, the size is what it comes out at
+        public bool NoLimit;           // no target size: the size is what the encode comes out at
+        public bool AutoBitrate = true;  // with NoLimit: constant quality; off: VideoKbps
+        public int VideoKbps;            // used with NoLimit when AutoBitrate is off
     }
 
     public class Plan
@@ -126,7 +128,8 @@ namespace CapCompress
                 p.NoLimit = true;
                 p.CanReduce = true;
                 p.AudioKbps = hasAudio ? NoLimitAudio : 0;
-                p.VideoKbps = 1000000;
+                // A bitrate picked by hand caps resolution and fps like a size does.
+                p.VideoKbps = s.AutoBitrate ? 1000000 : Math.Max(minVideo, s.VideoKbps);
             }
 
             p.Rungs = MakeRungs(v);
@@ -396,7 +399,7 @@ namespace CapCompress
             bool toneMap = v.Hdr && HasFilter(ffmpeg, "zscale");
             try
             {
-                if (p.NoLimit) return RunNoLimit(ffmpeg, v, s, p, output, part, toneMap, progress, cancel);
+                if (p.NoLimit) return RunNoLimit(ffmpeg, v, s, p, output, part, passlog, toneMap, progress, cancel);
                 for (int attempt = 1; attempt <= 4; attempt++)
                 {
                     string label = attempt == 1 ? "" : string.Format(" (retry {0})", attempt - 1);
@@ -435,12 +438,24 @@ namespace CapCompress
             }
         }
 
-        // One constant-quality encode; the size is whatever it comes out at, even bigger than the source.
-        static long RunNoLimit(string ffmpeg, VideoInfo v, Settings s, Plan p, string output, string part, bool toneMap,
-                               Action<double, string> progress, CancelFlag cancel)
+        // One encode at constant quality, or at the bitrate picked by hand; the size is whatever it
+        // comes out at, even bigger than the source. No retries: there's no target to hit.
+        static long RunNoLimit(string ffmpeg, VideoInfo v, Settings s, Plan p, string output, string part, string passlog,
+                               bool toneMap, Action<double, string> progress, CancelFlag cancel)
         {
-            Encode(ffmpeg, BaseArgs(v, s, p, toneMap) + QualityArgs(s) + AudioArgs(v, s, p) + Quote(part), p.Kept,
-                   f => progress(f, "Encoding"), cancel);
+            if (s.AutoBitrate)
+                Encode(ffmpeg, BaseArgs(v, s, p, toneMap) + QualityArgs(s) + AudioArgs(v, s, p) + Quote(part), p.Kept,
+                       f => progress(f, "Encoding"), cancel);
+            else if (s.Nvenc)
+                Encode(ffmpeg, BaseArgs(v, s, p, toneMap) + NvencArgs(p.VideoKbps) + AudioArgs(v, s, p) + Quote(part), p.Kept,
+                       f => progress(f, "Encoding"), cancel);
+            else
+            {
+                Encode(ffmpeg, BaseArgs(v, s, p, toneMap) + X264Args(p.VideoKbps) + string.Format(" -pass 1 -passlogfile {0} -an -f null NUL", Quote(passlog)), p.Kept,
+                       f => progress(f * 0.35, "Analysing"), cancel);
+                Encode(ffmpeg, BaseArgs(v, s, p, toneMap) + X264Args(p.VideoKbps) + string.Format(" -pass 2 -passlogfile {0}", Quote(passlog)) + AudioArgs(v, s, p) + Quote(part), p.Kept,
+                       f => progress(0.35 + f * 0.65, "Encoding"), cancel);
+            }
             long size = new FileInfo(part).Length;
             File.Move(part, output);
             progress(1, "Done");

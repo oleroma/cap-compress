@@ -9,6 +9,10 @@ everything else with ffmpeg.
   rate can go up to the original, and it encodes at constant quality (x264 CRF
   20, NVENC CQ 23), so the file is whatever size that gives, even bigger than
   the original.
+- **Bitrate** shows the video bitrate the target size gives. At No limit you
+  can untick its Auto (constant quality) and pick a bitrate yourself; the file
+  then comes out around the size shown, and that bitrate caps resolution and
+  frame rate the way a size does.
 - **Trim** is one slider with two handles. Less video means more bitrate for
   the part you keep. Arrow keys move a handle by 0.1 s; hold Shift to move 1 s
   at a time, and press or release it mid-hold to change speed.
