@@ -105,6 +105,12 @@ namespace CapCompress
             Check(res.Value >= shortAtHighFps, "lowering fps raises the resolution limit");
             Check(fps.Value >= 24, "fps stays at 24 or above");
 
+            Get<Toggle>("autoFps").Checked = true;
+            State("auto fps");
+            Check(!fps.Enabled, "Auto frame rate disables the frame rate slider");
+            Get<Toggle>("autoFps").Checked = false;
+            Check(fps.Enabled, "unticking Auto frame rate enables the slider again");
+
             Get<Toggle>("autoRes").Checked = true;
             Move(target, 100);
             trim.UserSet(true, 60);
@@ -150,6 +156,7 @@ namespace CapCompress
             Move(target, 50);
             Move(fps, 30);
             Move(res, 1);
+            Get<Toggle>("autoFps").Checked = true;
             rememberedTarget = Lead(Txt("targetValue"));
             rememberedFps = fps.Value;
             rememberedRes = Lead(Txt("resValue"));
@@ -176,6 +183,7 @@ namespace CapCompress
             Check(Get<Slider>("fps").Value == rememberedFps, "restart keeps the frame rate: " + Get<Slider>("fps").Value);
             Check(Lead(Txt("resValue")) == rememberedRes, "restart keeps the resolution: " + Txt("resValue"));
             Check(Get<Toggle>("mute").Checked, "restart keeps Remove audio");
+            Check(Get<Toggle>("autoFps").Checked, "restart keeps Auto frame rate");
             Check((Get<Segmented>("encoder").SelectedIndex == 1) == rememberedNvenc, "restart keeps the encoder");
             Check(Txt("trimValue").StartsWith("0:00.0"), "trim starts over for each video");
             form.Close();

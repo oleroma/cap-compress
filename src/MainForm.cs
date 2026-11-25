@@ -34,7 +34,9 @@ namespace CapCompress
         readonly RangeSlider trim = new RangeSlider { Dock = DockStyle.Fill, Height = Theme.S(34), Margin = new Padding(Theme.S(10), 0, Theme.S(10), 0) };
         readonly Label targetValue = Text0(), trimValue = Text0(), resValue = Text0(), fpsValue = Text0();
         readonly Toggle autoRes = new Toggle("Auto") { Checked = true };
+        readonly Toggle autoFps = new Toggle("Auto");
         readonly Toggle mute = new Toggle("Remove audio");
+        readonly Toggle mixAudio = new Toggle("Mix all tracks") { Checked = true, Visible = false };
         readonly Segmented encoder = new Segmented();
         readonly Label bitrate = Text0();
         readonly ProgressLine progress = new ProgressLine { Anchor = AnchorStyles.Left | AnchorStyles.Right, Height = Theme.S(6) };
@@ -52,6 +54,9 @@ namespace CapCompress
         CancelFlag cancel;
         bool updating;
         bool busy;
+        bool downloading;   // busy with the ffmpeg download rather than an encode
+        int loading;        // counts LoadVideo calls; a probe whose number is no longer current is dropped
+        bool probing;
         double targetMB = 10;
         int manualShort, manualFps;
         readonly string startupFile;
@@ -104,7 +109,7 @@ namespace CapCompress
             AddRow(grid, 1, "Target size", target, targetValue, null);
             AddRow(grid, 2, "Trim", trim, trimValue, null);
             AddRow(grid, 3, "Resolution", res, resValue, autoRes);
-            AddRow(grid, 4, "Frame rate", fps, fpsValue, null);
+            AddRow(grid, 4, "Frame rate", fps, fpsValue, autoFps);
 
             var encLabel = Text0();
             encLabel.Text = "Encoder";
@@ -115,7 +120,7 @@ namespace CapCompress
             grid.Controls.Add(encLabel, 0, 5);
             grid.Controls.Add(encoder, 1, 5);
             grid.Controls.Add(mute, 2, 5);
-            grid.SetColumnSpan(mute, 2);
+            grid.Controls.Add(mixAudio, 3, 5);
 
             var rateLabel = Text0();
             rateLabel.Text = "Bitrate";
@@ -156,7 +161,9 @@ namespace CapCompress
             res.Scroll += (o, e) => { manualShort = plan.Rungs[res.Value]; prefs.Short = manualShort; Recalculate(); };
             fps.Scroll += (o, e) => { manualFps = fps.Value; prefs.Fps = manualFps; Recalculate(); };
             autoRes.CheckedChanged += (o, e) => { if (plan != null) manualShort = plan.Short; if (!updating) prefs.AutoRes = autoRes.Checked; changed(o, e); };
+            autoFps.CheckedChanged += (o, e) => { if (plan != null) manualFps = plan.Fps; if (!updating) prefs.AutoFps = autoFps.Checked; changed(o, e); };
             mute.CheckedChanged += (o, e) => { if (!updating) prefs.Mute = mute.Checked; changed(o, e); };
+            mixAudio.CheckedChanged += (o, e) => { if (!updating) prefs.MixAudio = mixAudio.Checked; changed(o, e); };
             encoder.SelectedIndexChanged += (o, e) => { if (!updating) prefs.Nvenc = encoder.SelectedIndex == 1; changed(o, e); };
 
             browse.Click += (o, e) => Browse();
@@ -165,7 +172,13 @@ namespace CapCompress
             showFile.Click += (o, e) => { if (lastOutput != null) Process.Start("explorer.exe", "/select,\"" + lastOutput + "\""); };
             AcceptDrops(this);
             Shown += (o, e) => InitTools();
-            FormClosing += (o, e) => { if (cancel != null) cancel.Cancel(); SaveWindow(); prefs.Save(); };
+            FormClosing += (o, e) =>
+            {
+                if (cancel != null && !ConfirmClose(e.CloseReason)) { e.Cancel = true; return; }
+                if (cancel != null) cancel.Cancel();
+                SaveWindow();
+                prefs.Save();
+            };
 
             SetInputs();
         }
@@ -187,6 +200,17 @@ namespace CapCompress
             StartPosition = FormStartPosition.Manual;
             Bounds = b;
             if (prefs.Maximized) WindowState = FormWindowState.Maximized;
+        }
+
+        // Closing stops an encode or download that's running, so it asks first. Not when Windows
+        // is shutting down or Task Manager ends it: nobody could answer.
+        bool ConfirmClose(CloseReason reason)
+        {
+            if (reason == CloseReason.WindowsShutDown || reason == CloseReason.TaskManagerClosing) return true;
+            var rows = downloading
+                ? new string[,] { { null, "ffmpeg is still downloading. Closing stops the download." } }
+                : new string[,] { { null, "A video is still being compressed. Closing stops it, and no file is saved." } };
+            return ThemedDialog.Ask(this, downloading ? "Stop the download?" : "Stop compressing?", rows, "Stop and close", "Keep going");
         }
 
         void SaveWindow()
@@ -250,6 +274,7 @@ namespace CapCompress
             string dest = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "ffmpeg");
             cancel = new CancelFlag();
             var flag = cancel;
+            downloading = true;
             SetBusy(true);
             status.Text = "Downloading ffmpeg...";
             var worker = new Thread(() =>
@@ -260,6 +285,7 @@ namespace CapCompress
                 catch (Exception ex) { error = "Couldn't download ffmpeg: " + ex.Message; }
                 Ui(() =>
                 {
+                    downloading = false;
                     SetBusy(false);
                     progress.Value = 0;
                     cancel = null;
@@ -278,10 +304,33 @@ namespace CapCompress
             updating = true;
             encoder.Items.Clear();
             encoder.Items.Add("x264 · best quality");
-            if (Engine.HasEncoder(ffmpeg, "h264_nvenc")) encoder.Items.Add("NVENC · fast");
-            encoder.SelectedIndex = prefs.Nvenc && encoder.Items.Count > 1 ? 1 : 0;
+            encoder.SelectedIndex = 0;
             updating = false;
+            encoder.Invalidate();
             status.Text = "Ready.";
+            // NVENC is offered only once a test frame encodes: ffmpeg lists it even on PCs
+            // without an NVIDIA card. That takes a moment, so it runs beside everything else.
+            string tool = ffmpeg;
+            var check = new Thread(() =>
+            {
+                bool works = Engine.EncoderWorks(tool, "h264_nvenc");
+                Ui(() =>
+                {
+                    if (!works || encoder.Items.Count > 1) return;
+                    encoder.Items.Add("NVENC · fast");
+                    encoder.Invalidate();
+                    // Not while an encode runs: it already has its settings.
+                    if (prefs.Nvenc && !busy)
+                    {
+                        updating = true;
+                        encoder.SelectedIndex = 1;
+                        updating = false;
+                        Recalculate();
+                    }
+                });
+            });
+            check.IsBackground = true;
+            check.Start();
             if (startupFile != null) LoadVideo(startupFile);
         }
 
@@ -303,38 +352,66 @@ namespace CapCompress
             }
         }
 
+        // Probes on a worker thread, so a slow disk or a big file doesn't freeze the window.
         void LoadVideo(string path)
         {
             if (busy || ffprobe == null) return;
-            try
-            {
-                video = Engine.Probe(ffprobe, path);
-            }
-            catch (Exception ex)
-            {
-                video = null;
-                plan = null;
-                status.Text = ex.Message;
-                SetInputs();
-                return;
-            }
-
+            int id = ++loading;
+            probing = true;
             fileLabel.Text = Path.GetFileName(path);
-            fileInfo.Text = string.Format("{0}x{1}  ·  {2:0.##} fps  ·  {3}  ·  {4}",
-                video.Width, video.Height, video.Fps, Time(video.Duration), SizeText(video.SizeBytes));
+            fileInfo.Text = "Reading the video...";
+            showFile.Visible = false;
+            progress.Value = 0;
+            status.Text = "";
+            SetInputs();
+            string tool = ffprobe;
+            var worker = new Thread(() =>
+            {
+                VideoInfo info = null;
+                string error = null;
+                try { info = Engine.Probe(tool, path); }
+                catch (Exception ex) { error = ex.Message; }
+                Ui(() =>
+                {
+                    if (id != loading) return;   // another file was picked meanwhile
+                    probing = false;
+                    if (error != null) VideoFailed(error);
+                    else VideoLoaded(info);
+                });
+            });
+            worker.IsBackground = true;
+            worker.Start();
+        }
+
+        void VideoFailed(string error)
+        {
+            video = null;
+            plan = null;
+            fileInfo.Text = "Couldn't read this file";
+            status.Text = error;
+            Recalculate();
+        }
+
+        void VideoLoaded(VideoInfo info)
+        {
+            video = info;
+            fileLabel.Text = Path.GetFileName(video.Path);
+            fileInfo.Text = string.Format("{0}x{1}  ·  {2:0.##} fps{3}  ·  {4}  ·  {5}{6}",
+                video.Width, video.Height, video.Fps, video.Hdr ? " HDR" : "", Time(video.Duration), SizeText(video.SizeBytes),
+                video.AudioTracks > 1 ? string.Format("  ·  {0} audio tracks", video.AudioTracks) : "");
             int tenths = (int)Math.Round(video.Duration * 10);
             updating = true;
             autoRes.Checked = prefs.AutoRes;
+            autoFps.Checked = prefs.AutoFps;
             mute.Checked = prefs.Mute;
+            mixAudio.Checked = prefs.MixAudio;
+            mixAudio.Visible = video.AudioTracks > 1;
             trim.Reset(tenths, Math.Min(10, tenths));
             updating = false;
             // Last used settings; the plan fits them to this video.
             manualShort = prefs.Short > 0 ? prefs.Short : video.ShortSide;
             manualFps = Math.Min(prefs.Fps > 0 ? prefs.Fps : 24, video.MaxFps);
             targetMB = prefs.TargetMB;
-            showFile.Visible = false;
-            progress.Value = 0;
-            status.Text = "";
             Recalculate();
         }
 
@@ -347,11 +424,12 @@ namespace CapCompress
                 TrimStart = trim.Low / 10.0,
                 TrimEnd = trim.High >= tenths ? 0 : trim.High / 10.0,
                 AutoRes = autoRes.Checked,
-                AutoFps = false,
+                AutoFps = autoFps.Checked,
                 Short = manualShort,
                 Fps = manualFps,
                 Nvenc = encoder.SelectedIndex == 1,
-                Mute = mute.Checked
+                Mute = mute.Checked,
+                MixAudio = mixAudio.Checked
             };
         }
 
@@ -393,15 +471,18 @@ namespace CapCompress
 
         void SetInputs()
         {
-            bool ready = video != null && !busy;
+            bool ready = video != null && !busy && !probing;
             bool canReduce = ready && plan != null && plan.CanReduce;
             browse.Enabled = !busy;
+            if (video == null) mixAudio.Visible = false;
             target.Enabled = canReduce;
             trim.Enabled = ready;
             autoRes.Enabled = canReduce;
             res.Enabled = canReduce && !autoRes.Checked && plan.Rungs.Count > 1;
-            fps.Enabled = canReduce && video.MaxFps > plan.MinFps;
+            autoFps.Enabled = canReduce;
+            fps.Enabled = canReduce && !autoFps.Checked && video.MaxFps > plan.MinFps;
             mute.Enabled = ready && video.HasAudio;
+            mixAudio.Enabled = ready && video.AudioTracks > 1 && !mute.Checked;
             encoder.Enabled = ready;
             compress.Enabled = canReduce;
             cancelButton.Enabled = busy;
@@ -417,7 +498,7 @@ namespace CapCompress
 
         void StartCompress()
         {
-            if (video == null || plan == null || !plan.CanReduce || busy) return;
+            if (video == null || plan == null || !plan.CanReduce || busy || probing) return;
             var settings = ReadSettings();
             prefs.Save();
             var runPlan = plan;
@@ -489,7 +570,7 @@ namespace CapCompress
     class Prefs
     {
         public double TargetMB = 10;
-        public bool AutoRes = true, Nvenc, Mute;
+        public bool AutoRes = true, AutoFps, Nvenc, Mute, MixAudio = true;
         public int Short, Fps;          // 0 until the user picks one
         public Rectangle Window;
         public bool Maximized;
@@ -524,6 +605,8 @@ namespace CapCompress
                     {
                         case "TargetMB": if (double.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out d) && d > 0) p.TargetMB = d; break;
                         case "AutoRes": p.AutoRes = value != "false"; break;
+                        case "AutoFps": p.AutoFps = value == "true"; break;
+                        case "MixAudio": p.MixAudio = value != "false"; break;
                         case "Short": if (Int(value, out i) && i > 0) p.Short = i; break;
                         case "Fps": if (Int(value, out i) && i > 0) p.Fps = i; break;
                         case "Encoder": p.Nvenc = value == "nvenc"; break;
@@ -551,10 +634,12 @@ namespace CapCompress
                 {
                     "TargetMB=" + TargetMB.ToString("0.0", inv),
                     "AutoRes=" + (AutoRes ? "true" : "false"),
+                    "AutoFps=" + (AutoFps ? "true" : "false"),
                     "Short=" + Short.ToString(inv),
                     "Fps=" + Fps.ToString(inv),
                     "Encoder=" + (Nvenc ? "nvenc" : "x264"),
                     "Mute=" + (Mute ? "true" : "false"),
+                    "MixAudio=" + (MixAudio ? "true" : "false"),
                     "Maximized=" + (Maximized ? "true" : "false")
                 };
                 if (Window.Width > 0)

@@ -19,7 +19,7 @@ static class EngineTest
     {
         Thread.CurrentThread.CurrentCulture = new CultureInfo("de-DE");   // decimal comma must not leak into ffmpeg args
 
-        var v = new VideoInfo { Path = "x", SizeBytes = 452L << 20, Duration = 47.3, Width = 1920, Height = 1080, Fps = 60, HasAudio = true };
+        var v = new VideoInfo { Path = "x", SizeBytes = 452L << 20, Duration = 47.3, Width = 1920, Height = 1080, Fps = 60, AudioTracks = 1 };
         var auto = Engine.MakePlan(v, new Settings());
         Check(auto.Short == 540 && auto.Fps == 30, "auto picks 540p30 at 10 MB: " + auto.Short + "p" + auto.Fps);
         Check(auto.AudioKbps == 128, "audio follows budget");
@@ -44,15 +44,28 @@ static class EngineTest
         Check(tightPlan.Fps >= 24 && tightPlan.Short * (long)tightPlan.OutLong * tightPlan.Fps * 0.01 <= tightPlan.VideoKbps * 1000.0,
               "over-budget manual combo is clamped: " + tightPlan.Short + "p" + tightPlan.Fps);
 
-        var longVid = new VideoInfo { Path = "x", SizeBytes = 200L << 20, Duration = 7200, Width = 1920, Height = 1080, Fps = 30, HasAudio = true };
+        var longVid = new VideoInfo { Path = "x", SizeBytes = 200L << 20, Duration = 7200, Width = 1920, Height = 1080, Fps = 30, AudioTracks = 1 };
         Check(Engine.MakePlan(longVid, new Settings()).TargetMB >= Engine.MakePlan(longVid, new Settings()).MinMB, "target raised to minimum for long video");
-        var hopeless = new VideoInfo { Path = "x", SizeBytes = 1L << 20, Duration = 7200, Width = 640, Height = 360, Fps = 30, HasAudio = true };
+        var hopeless = new VideoInfo { Path = "x", SizeBytes = 1L << 20, Duration = 7200, Width = 640, Height = 360, Fps = 30, AudioTracks = 1 };
         Check(!Engine.MakePlan(hopeless, new Settings()).CanReduce, "refuses when source is below the minimum");
-        var slow = new VideoInfo { Path = "x", SizeBytes = 400L << 20, Duration = 30, Width = 1280, Height = 720, Fps = 15, HasAudio = false };
+        var slow = new VideoInfo { Path = "x", SizeBytes = 400L << 20, Duration = 30, Width = 1280, Height = 720, Fps = 15, AudioTracks = 0 };
         var slowPlan = Engine.MakePlan(slow, new Settings());
         Check(slowPlan.Fps == 15 && slowPlan.MinFps == 15, "low-fps source is never raised");
-        var phone = new VideoInfo { Path = "x", SizeBytes = 400L << 20, Duration = 30, Width = 1080, Height = 1920, Fps = 60, HasAudio = true };
+        var phone = new VideoInfo { Path = "x", SizeBytes = 400L << 20, Duration = 30, Width = 1080, Height = 1920, Fps = 60, AudioTracks = 1 };
         Check(Engine.MakePlan(phone, new Settings()).Rungs.Contains(1080), "portrait uses short side");
+
+        // ffmpeg arguments: HDR tone mapping and mixing several audio tracks.
+        var sdrArgs = Engine.BaseArgs(v, new Settings(), auto, false);
+        Check(!sdrArgs.Contains("tonemap"), "SDR isn't tone mapped");
+        var hdr = new VideoInfo { Path = "x", SizeBytes = 400L << 20, Duration = 30, Width = 1080, Height = 1920, Fps = 30, AudioTracks = 1, Hdr = true };
+        var hdrArgs = Engine.BaseArgs(hdr, new Settings(), Engine.MakePlan(hdr, new Settings()), true);
+        Check(hdrArgs.Contains("tonemap=") && hdrArgs.Contains("-colorspace bt709") && hdrArgs.IndexOf("scale=") < hdrArgs.IndexOf("zscale="), "HDR is tone mapped to BT.709 after scaling");
+        Check(Engine.AudioArgs(v, new Settings(), auto).Contains("-map 0:a:0"), "one audio track is kept as is");
+        var obs = new VideoInfo { Path = "x", SizeBytes = 452L << 20, Duration = 47.3, Width = 1920, Height = 1080, Fps = 60, AudioTracks = 3 };
+        var obsPlan = Engine.MakePlan(obs, new Settings());
+        Check(Engine.AudioArgs(obs, new Settings(), obsPlan).Contains("[0:a:0][0:a:1][0:a:2]amix=inputs=3"), "several audio tracks are mixed");
+        Check(Engine.AudioArgs(obs, new Settings { MixAudio = false }, obsPlan).Contains("-map 0:a:0 "), "mixing off keeps the first track");
+        Check(Engine.AudioArgs(obs, new Settings { Mute = true }, Engine.MakePlan(obs, new Settings { Mute = true })).StartsWith(" -an"), "mute drops every track");
 
         if (args.Length >= 3 && args[0] == "download")
         {
@@ -66,11 +79,12 @@ static class EngineTest
             string ffmpeg = Engine.FindTool("ffmpeg"), ffprobe = Engine.FindTool("ffprobe");
             string input = args[0], dir = args[1];
             var info = Engine.Probe(ffprobe, input);
-            Console.WriteLine("probed " + info.Width + "x" + info.Height + " " + info.Fps + " fps " + info.Duration + "s audio=" + info.HasAudio);
-            Check(Engine.HasEncoder(ffmpeg, "h264_nvenc"), "nvenc listed");
+            Console.WriteLine("probed " + info.Width + "x" + info.Height + " " + info.Fps + " fps " + info.Duration + "s audio tracks=" + info.AudioTracks + " hdr=" + info.Hdr);
+            bool nvenc = Engine.EncoderWorks(ffmpeg, "h264_nvenc");
+            Console.WriteLine("nvenc works: " + nvenc);
 
             Encode(ffmpeg, ffprobe, info, new Settings { TargetMB = 5, TrimStart = 5, TrimEnd = 25 }, Path.Combine(dir, "x264 trim.mp4"));
-            Encode(ffmpeg, ffprobe, info, new Settings { TargetMB = 8, Nvenc = true }, Path.Combine(dir, "nvenc.mp4"));
+            if (nvenc) Encode(ffmpeg, ffprobe, info, new Settings { TargetMB = 8, Nvenc = true }, Path.Combine(dir, "nvenc.mp4"));
             Encode(ffmpeg, ffprobe, info, new Settings { TargetMB = 3, Mute = true, TrimEnd = 10, AutoRes = false, Short = 360, AutoFps = false, Fps = 24 }, Path.Combine(dir, "manual mute.mp4"));
 
             var flag = new CancelFlag();
