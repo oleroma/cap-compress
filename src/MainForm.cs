@@ -68,6 +68,7 @@ namespace CapCompress
                                         6000, 8000, 10000, 12000, 15000, 20000, 25000, 30000, 40000, 50000 };
 
         int manualShort, manualFps;
+        bool resFirst;      // resolution was moved after fps: on a clash between the two, it wins
         readonly string startupFile;
         readonly float scale;
         readonly Prefs prefs = Prefs.Load();
@@ -174,8 +175,8 @@ namespace CapCompress
                 Recalculate();
             };
             trim.Scroll += (o, e) => Recalculate();
-            res.Scroll += (o, e) => { manualShort = plan.Rungs[res.Value]; prefs.Short = manualShort; Recalculate(); };
-            fps.Scroll += (o, e) => { manualFps = fps.Value; prefs.Fps = manualFps; Recalculate(); };
+            res.Scroll += (o, e) => { manualShort = plan.Rungs[res.Value]; prefs.Short = manualShort; resFirst = true; Recalculate(); };
+            fps.Scroll += (o, e) => { manualFps = fps.Value; prefs.Fps = manualFps; resFirst = false; Recalculate(); };
             autoRes.CheckedChanged += (o, e) => { if (plan != null) manualShort = plan.Short; if (!updating) prefs.AutoRes = autoRes.Checked; changed(o, e); };
             autoFps.CheckedChanged += (o, e) => { if (plan != null) manualFps = plan.Fps; if (!updating) prefs.AutoFps = autoFps.Checked; changed(o, e); };
             mute.CheckedChanged += (o, e) => { if (!updating) prefs.Mute = mute.Checked; changed(o, e); };
@@ -453,6 +454,7 @@ namespace CapCompress
                 AutoFps = autoFps.Checked,
                 Short = manualShort,
                 Fps = manualFps,
+                ResFirst = resFirst,
                 Nvenc = encoder.SelectedIndex == 1,
                 Mute = mute.Checked,
                 MixAudio = mixAudio.Checked

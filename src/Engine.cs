@@ -35,6 +35,7 @@ namespace CapCompress
         public bool AutoRes = true, AutoFps = true;
         public int Short;        // used when AutoRes is off
         public int Fps;          // used when AutoFps is off
+        public bool ResFirst;    // both manual and they don't fit together: resolution was set last, so it wins
         public bool Nvenc, Mute;
         public bool MixAudio = true;   // with several audio tracks, mix them all instead of keeping the first
         public bool NoLimit;           // no target size: the size is what the encode comes out at
@@ -177,6 +178,11 @@ namespace CapCompress
                 p.Fps = p.MinFps;
                 foreach (int f in new[] { v.MaxFps, 30 })
                     if (f <= v.MaxFps && f > p.Fps && Bpp(v, p.Short, f, p.VideoKbps) >= Goal) { p.Fps = f; break; }
+            }
+            else if (s.ResFirst)
+            {
+                p.Short = Math.Min(NearestRung(p.Rungs, s.Short), resCap(p.MinFps));
+                p.Fps = Math.Min(Clamp(s.Fps, p.MinFps, v.MaxFps), fpsCap(p.Short));
             }
             else
             {

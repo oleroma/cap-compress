@@ -44,6 +44,9 @@ static class EngineTest
         Check(tightPlan.Fps >= 24 && tightPlan.Short * (long)tightPlan.OutLong * tightPlan.Fps * 0.01 <= tightPlan.VideoKbps * 1000.0,
               "over-budget manual combo is clamped: " + tightPlan.Short + "p" + tightPlan.Fps);
 
+        var tightRes = Engine.MakePlan(v, new Settings { TargetMB = 2, AutoFps = false, Fps = 60, AutoRes = false, Short = 1080, ResFirst = true });
+        Check(tightRes.Short > tightPlan.Short && tightRes.Fps < tightPlan.Fps, "on a clash the one set last wins: fps last " + tightPlan.Short + "p" + tightPlan.Fps + ", resolution last " + tightRes.Short + "p" + tightRes.Fps);
+
         var longVid = new VideoInfo { Path = "x", SizeBytes = 200L << 20, Duration = 7200, Width = 1920, Height = 1080, Fps = 30, AudioTracks = 1 };
         Check(Engine.MakePlan(longVid, new Settings()).TargetMB >= Engine.MakePlan(longVid, new Settings()).MinMB, "target raised to minimum for long video");
         var hopeless = new VideoInfo { Path = "x", SizeBytes = 1L << 20, Duration = 7200, Width = 640, Height = 360, Fps = 30, AudioTracks = 1 };
