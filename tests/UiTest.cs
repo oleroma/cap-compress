@@ -81,10 +81,16 @@ namespace CapCompress
             Check(held.Low == after, "stops when Right is released");
             held.UserSet(false, 0);
 
-            Move(target, int.MaxValue);
-            State("target max");
             var video = (VideoInfo)typeof(MainForm).GetField("video", BindingFlags.NonPublic | BindingFlags.Instance).GetValue(form);
-            Check(target.Value / 10.0 < video.SizeBytes / 1048576.0, "target slider stops below source size");
+            Move(target, int.MaxValue);
+            Move(fps, fps.Maximum);
+            State("target no limit");
+            Check(Txt("targetValue") == "No limit", "the last stop of Target size is No limit");
+            Check(fps.Value == video.MaxFps && Txt("resValue").StartsWith(string.Format("{0}x{1}", video.LongSide / 2 * 2, video.ShortSide / 2 * 2)),
+                  "No limit allows the source resolution and fps: " + Txt("resValue") + ", " + fps.Value);
+            Move(target, target.Maximum - 1);
+            State("target max");
+            Check(target.Value / 10.0 < video.SizeBytes / 1048576.0, "largest size stops below source size");
 
             Move(target, int.MinValue);
             State("target min");

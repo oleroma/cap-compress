@@ -54,6 +54,12 @@ static class EngineTest
         var phone = new VideoInfo { Path = "x", SizeBytes = 400L << 20, Duration = 30, Width = 1080, Height = 1920, Fps = 60, AudioTracks = 1 };
         Check(Engine.MakePlan(phone, new Settings()).Rungs.Contains(1080), "portrait uses short side");
 
+        var free = Engine.MakePlan(v, new Settings { NoLimit = true, TargetMB = 1 });
+        Check(free.NoLimit && free.Short == 1080 && free.Fps == 60 && free.ResCap == 1080 && free.FpsCap == 60, "No limit keeps the source resolution and fps: " + free.Short + "p" + free.Fps);
+        var freeManual = Engine.MakePlan(v, new Settings { NoLimit = true, AutoRes = false, Short = 720, AutoFps = false, Fps = 30 });
+        Check(freeManual.Short == 720 && freeManual.Fps == 30, "No limit still takes a manual pick: " + freeManual.Short + "p" + freeManual.Fps);
+        Check(Engine.QualityArgs(new Settings()).Contains("-crf") && Engine.QualityArgs(new Settings { Nvenc = true }).Contains("-cq"), "No limit encodes at constant quality");
+
         // ffmpeg arguments: HDR tone mapping and mixing several audio tracks.
         var sdrArgs = Engine.BaseArgs(v, new Settings(), auto, false);
         Check(!sdrArgs.Contains("tonemap"), "SDR isn't tone mapped");

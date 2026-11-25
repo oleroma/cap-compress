@@ -58,6 +58,8 @@ namespace CapCompress
         int loading;        // counts LoadVideo calls; a probe whose number is no longer current is dropped
         bool probing;
         double targetMB = 10;
+        bool noLimit;       // Target size at its last stop, past the largest size
+
         int manualShort, manualFps;
         readonly string startupFile;
         readonly float scale;
@@ -156,7 +158,15 @@ namespace CapCompress
 
             EventHandler changed = (o, e) => { if (!updating) Recalculate(); };
             // What the user picks is remembered between restarts (see Prefs).
-            target.Scroll += (o, e) => { targetMB = target.Value / 10.0; prefs.TargetMB = targetMB; Recalculate(); };
+            // The slider's last stop, one past the largest size, is No limit.
+            target.Scroll += (o, e) =>
+            {
+                noLimit = target.Value == target.Maximum;
+                if (!noLimit) targetMB = target.Value / 10.0;
+                prefs.NoLimit = noLimit;
+                prefs.TargetMB = targetMB;
+                Recalculate();
+            };
             trim.Scroll += (o, e) => Recalculate();
             res.Scroll += (o, e) => { manualShort = plan.Rungs[res.Value]; prefs.Short = manualShort; Recalculate(); };
             fps.Scroll += (o, e) => { manualFps = fps.Value; prefs.Fps = manualFps; Recalculate(); };
@@ -412,6 +422,7 @@ namespace CapCompress
             manualShort = prefs.Short > 0 ? prefs.Short : video.ShortSide;
             manualFps = Math.Min(prefs.Fps > 0 ? prefs.Fps : 24, video.MaxFps);
             targetMB = prefs.TargetMB;
+            noLimit = prefs.NoLimit;
             Recalculate();
         }
 
@@ -421,6 +432,7 @@ namespace CapCompress
             return new Settings
             {
                 TargetMB = targetMB,
+                NoLimit = noLimit,
                 TrimStart = trim.Low / 10.0,
                 TrimEnd = trim.High >= tenths ? 0 : trim.High / 10.0,
                 AutoRes = autoRes.Checked,
@@ -444,8 +456,9 @@ namespace CapCompress
             updating = true;
             if (plan.CanReduce)
             {
-                target.SetRange((int)Math.Round(plan.MinMB * 10), (int)Math.Round(plan.MaxMB * 10));
-                target.Value = Math.Max(target.Minimum, Math.Min(target.Maximum, (int)Math.Round(plan.TargetMB * 10)));
+                int max = (int)Math.Round(plan.MaxMB * 10);
+                target.SetRange((int)Math.Round(plan.MinMB * 10), max + 1);
+                target.Value = noLimit ? max + 1 : Math.Max(target.Minimum, Math.Min(max, (int)Math.Round(plan.TargetMB * 10)));
                 target.LargeChange = Math.Max(1, (target.Maximum - target.Minimum) / 10);
             }
             res.SetRange(0, plan.Rungs.Count - 1);
@@ -454,11 +467,16 @@ namespace CapCompress
             fps.Value = plan.Fps;
             updating = false;
 
-            targetValue.Text = plan.CanReduce ? string.Format("{0:0.0} MB (max {1:0.0})", plan.TargetMB, plan.MaxMB) : "not possible";
+            targetValue.Text = plan.NoLimit ? "No limit"
+                : plan.CanReduce ? string.Format("{0:0.0} MB (max {1:0.0})", plan.TargetMB, plan.MaxMB) : "not possible";
             trimValue.Text = string.Format("{0} – {1}  (keeps {2})", Time(trim.Low / 10.0), Time(trim.High / 10.0), Time(plan.Kept));
             resValue.Text = string.Format("{0}x{1}  (max {2}p)", plan.OutLong, plan.Short, plan.ResCap);
             fpsValue.Text = string.Format("{0} fps  (max {1})", plan.Fps, plan.FpsCap);
-            bitrate.Text = plan.AudioKbps > 0
+            if (plan.NoLimit)
+                bitrate.Text = string.Format("Constant quality ({0} {1}), {2}; the size is whatever it comes out at",
+                    encoder.SelectedIndex == 1 ? "CQ" : "CRF", encoder.SelectedIndex == 1 ? Engine.Cq : Engine.Crf,
+                    plan.AudioKbps > 0 ? "audio " + plan.AudioKbps + " kbps" : "no audio");
+            else bitrate.Text = plan.AudioKbps > 0
                 ? string.Format("Video {0} kbps, audio {1} kbps", plan.VideoKbps, plan.AudioKbps)
                 : string.Format("Video {0} kbps, no audio", plan.VideoKbps);
 
@@ -570,7 +588,7 @@ namespace CapCompress
     class Prefs
     {
         public double TargetMB = 10;
-        public bool AutoRes = true, AutoFps, Nvenc, Mute, MixAudio = true;
+        public bool AutoRes = true, AutoFps, Nvenc, Mute, MixAudio = true, NoLimit;
         public int Short, Fps;          // 0 until the user picks one
         public Rectangle Window;
         public bool Maximized;
@@ -607,6 +625,7 @@ namespace CapCompress
                         case "AutoRes": p.AutoRes = value != "false"; break;
                         case "AutoFps": p.AutoFps = value == "true"; break;
                         case "MixAudio": p.MixAudio = value != "false"; break;
+                        case "NoLimit": p.NoLimit = value == "true"; break;
                         case "Short": if (Int(value, out i) && i > 0) p.Short = i; break;
                         case "Fps": if (Int(value, out i) && i > 0) p.Fps = i; break;
                         case "Encoder": p.Nvenc = value == "nvenc"; break;
@@ -640,6 +659,7 @@ namespace CapCompress
                     "Encoder=" + (Nvenc ? "nvenc" : "x264"),
                     "Mute=" + (Mute ? "true" : "false"),
                     "MixAudio=" + (MixAudio ? "true" : "false"),
+                    "NoLimit=" + (NoLimit ? "true" : "false"),
                     "Maximized=" + (Maximized ? "true" : "false")
                 };
                 if (Window.Width > 0)

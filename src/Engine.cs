@@ -37,6 +37,7 @@ namespace CapCompress
         public int Fps;          // used when AutoFps is off
         public bool Nvenc, Mute;
         public bool MixAudio = true;   // with several audio tracks, mix them all instead of keeping the first
+        public bool NoLimit;           // no target size: encode at constant quality, the size is what it comes out at
     }
 
     public class Plan
@@ -44,6 +45,7 @@ namespace CapCompress
         public double Kept;
         public double MinMB, MaxMB, TargetMB;
         public bool CanReduce;
+        public bool NoLimit;
         public int AudioKbps, VideoKbps;
         public List<int> Rungs;
         public int Short, Fps, MinFps, ResCap, FpsCap;
@@ -74,6 +76,9 @@ namespace CapCompress
         // Auto aims for the goal.
         const double FloorX264 = 0.01, FloorNvenc = 0.02, Goal = 0.1;
         const int MinVideoX264 = 50, MinVideoNvenc = 100, MinAudio = 48, FpsFloor = 24;
+        // Constant quality for No limit: visually close to the source for both encoders.
+        public const int Crf = 20, Cq = 23;
+        const int NoLimitAudio = 128;
         static readonly int[] Ladder = { 144, 240, 360, 480, 540, 720, 900, 1080, 1440, 2160, 2880, 4320 };
 
         public const string FfmpegZipUrl = "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip";
@@ -114,6 +119,15 @@ namespace CapCompress
             double totalKbps = p.TargetMB * Mb * 8 * Usable / p.Kept / 1000;
             p.AudioKbps = !hasAudio ? 0 : totalKbps >= 1000 ? 128 : totalKbps >= 300 ? 96 : totalKbps >= 120 ? 64 : MinAudio;
             p.VideoKbps = Math.Max(1, (int)(totalKbps - p.AudioKbps));
+            if (s.NoLimit)
+            {
+                // No bitrate to share out, so nothing caps resolution or fps below the source.
+                // VideoKbps is only a stand-in big enough for the caps; the encode uses CRF/CQ.
+                p.NoLimit = true;
+                p.CanReduce = true;
+                p.AudioKbps = hasAudio ? NoLimitAudio : 0;
+                p.VideoKbps = 1000000;
+            }
 
             p.Rungs = MakeRungs(v);
             p.MinFps = Math.Min(FpsFloor, v.MaxFps);
@@ -382,6 +396,7 @@ namespace CapCompress
             bool toneMap = v.Hdr && HasFilter(ffmpeg, "zscale");
             try
             {
+                if (p.NoLimit) return RunNoLimit(ffmpeg, v, s, p, output, part, toneMap, progress, cancel);
                 for (int attempt = 1; attempt <= 4; attempt++)
                 {
                     string label = attempt == 1 ? "" : string.Format(" (retry {0})", attempt - 1);
@@ -418,6 +433,31 @@ namespace CapCompress
                 foreach (string f in Directory.GetFiles(Path.GetDirectoryName(passlog), Path.GetFileName(passlog) + "*"))
                     try { File.Delete(f); } catch { }
             }
+        }
+
+        // One constant-quality encode; the size is whatever it comes out at. It's only kept when
+        // it's smaller than the part of the source it came from: the app never makes a file bigger.
+        static long RunNoLimit(string ffmpeg, VideoInfo v, Settings s, Plan p, string output, string part, bool toneMap,
+                               Action<double, string> progress, CancelFlag cancel)
+        {
+            Encode(ffmpeg, BaseArgs(v, s, p, toneMap) + QualityArgs(s) + AudioArgs(v, s, p) + Quote(part), p.Kept,
+                   f => progress(f, "Encoding"), cancel);
+            long size = new FileInfo(part).Length;
+            double source = v.SizeBytes * Math.Min(1, p.Kept / v.Duration);
+            if (size >= source)
+                throw new Exception(string.Format(CultureInfo.InvariantCulture,
+                    "At this quality it came out at {0:0.0} MB, not smaller than the original ({1:0.0} MB), so nothing was saved. Lower the resolution or frame rate, or pick a target size.",
+                    size / Mb, source / Mb));
+            File.Move(part, output);
+            progress(1, "Done");
+            return size;
+        }
+
+        internal static string QualityArgs(Settings s)
+        {
+            return s.Nvenc
+                ? string.Format(" -c:v h264_nvenc -preset p7 -tune hq -rc vbr -cq {0} -b:v 0 -multipass fullres", Cq)
+                : string.Format(" -c:v libx264 -preset slow -crf {0}", Crf);
         }
 
         static string Quote(string path) { return " \"" + path + "\""; }
