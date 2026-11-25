@@ -435,19 +435,13 @@ namespace CapCompress
             }
         }
 
-        // One constant-quality encode; the size is whatever it comes out at. It's only kept when
-        // it's smaller than the part of the source it came from: the app never makes a file bigger.
+        // One constant-quality encode; the size is whatever it comes out at, even bigger than the source.
         static long RunNoLimit(string ffmpeg, VideoInfo v, Settings s, Plan p, string output, string part, bool toneMap,
                                Action<double, string> progress, CancelFlag cancel)
         {
             Encode(ffmpeg, BaseArgs(v, s, p, toneMap) + QualityArgs(s) + AudioArgs(v, s, p) + Quote(part), p.Kept,
                    f => progress(f, "Encoding"), cancel);
             long size = new FileInfo(part).Length;
-            double source = v.SizeBytes * Math.Min(1, p.Kept / v.Duration);
-            if (size >= source)
-                throw new Exception(string.Format(CultureInfo.InvariantCulture,
-                    "At this quality it came out at {0:0.0} MB, not smaller than the original ({1:0.0} MB), so nothing was saved. Lower the resolution or frame rate, or pick a target size.",
-                    size / Mb, source / Mb));
             File.Move(part, output);
             progress(1, "Done");
             return size;

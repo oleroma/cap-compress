@@ -4,8 +4,11 @@ A small portable Windows app that shrinks a video to fit a size cap, such as
 Discord's 10 MB upload limit. Pick the target size and the app works out
 everything else with ffmpeg.
 
-- **Target size** is the main slider. It stops just below the source size, so
-  the app only ever makes a file smaller.
+- **Target size** is the main slider. Its sizes stop just below the source
+  size. Its last stop, **No limit**, drops the size target: resolution and frame
+  rate can go up to the original, and it encodes at constant quality (x264 CRF
+  20, NVENC CQ 23), so the file is whatever size that gives, even bigger than
+  the original.
 - **Trim** is one slider with two handles. Less video means more bitrate for
   the part you keep. Arrow keys move a handle by 0.1 s; hold Shift to move 1 s
   at a time, and press or release it mid-hold to change speed.
