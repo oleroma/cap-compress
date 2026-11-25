@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# Full checks, run once per feature before the merge by agent-check (on the PC, or the fallback
+# with checks), not by builds. The quick tests already ran in the builds, so they aren't repeated.
+# The app and both test programs compile with warnings as errors. The real-video tests (encodes
+# and the window test) need a video: Olex runs those himself.
+set -euo pipefail
+cd "$(dirname "$0")/../.."
+[ "${OS:-}" = Windows_NT ] || { echo "cap-compress's checks run only on Windows." >&2; exit 1; }
+fw="$(cygpath -u "$WINDIR")/Microsoft.NET/Framework64/v4.0.30319"
+fww="$(cygpath -w "$fw")"
+refs=(-r:System.Windows.Forms.dll -r:System.Drawing.dll
+  "-r:$fww\\System.IO.Compression.dll" "-r:$fww\\System.IO.Compression.FileSystem.dll")
+mkdir -p build/check
+csc() { "$fw/csc.exe" -nologo -warnaserror+ "${refs[@]}" "$@"; }
+csc -target:winexe -out:build/check/cap-compress.exe src/Engine.cs src/Theme.cs src/MainForm.cs
+csc -out:build/check/EngineTest.exe tests/EngineTest.cs src/Engine.cs
+csc -main:CapCompress.UiTest -out:build/check/UiTest.exe tests/UiTest.cs src/Engine.cs src/Theme.cs src/MainForm.cs

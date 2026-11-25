@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+# Installs the built cap-compress.exe for the user at %LOCALAPPDATA%\Programs\CapCompress and adds
+# it to the Start menu. Never starts, stops or restarts cap-compress. It can't update itself while
+# it runs, so when it's running the build isn't installed and the note says to close it and run
+# agent-install again. An ffmpeg folder the app downloaded beside itself is kept.
+# Usage: install <version>-<commit> <path to cap-compress.exe>
+set -euo pipefail
+build_id="$1"
+exe="$2"
+[ "${OS:-}" = Windows_NT ] && [ -n "${LOCALAPPDATA:-}" ] ||
+  { echo "note: Not installed: not on Windows."; exit 0; }
+dest="$(cygpath -u "$LOCALAPPDATA")/Programs/CapCompress"
+app_exe="$dest/cap-compress.exe"
+export APP_EXE_W
+APP_EXE_W="$(cygpath -w "$app_exe")"
+mkdir -p "$dest"
+
+# One whose path can't be read (an elevated one) counts as running, so its exe is left alone.
+if powershell.exe -NoProfile -NonInteractive -Command '$p = @(Get-Process -Name cap-compress -ErrorAction SilentlyContinue | Where-Object { -not $_.Path -or $_.Path -eq $env:APP_EXE_W }); if ($p.Count -gt 0) { exit 0 } else { exit 1 }' </dev/null; then
+  echo "note: Not installed: cap-compress is running. Close it, then run agent-install $build_id."
+  exit 0
+fi
+
+# Written under another name first, so a failed copy leaves the old build working.
+cp -f "$exe" "$app_exe.new.tmp"
+mv -f "$app_exe.new.tmp" "$app_exe"
+
+lnk="$(cygpath -w "$APPDATA")\\Microsoft\\Windows\\Start Menu\\Programs\\cap-compress.lnk"
+powershell.exe -NoProfile -NonInteractive -Command "\$s = (New-Object -ComObject WScript.Shell).CreateShortcut('$lnk'); \$s.TargetPath = \$env:APP_EXE_W; \$s.WorkingDirectory = '$(cygpath -w "$dest")'; \$s.Description = 'cap-compress'; \$s.Save()" </dev/null \
+  || echo "note: Couldn't create the Start menu shortcut."
+echo "note: cap-compress $build_id installed; it runs the next time it starts. Path: $LOCALAPPDATA\\Programs\\CapCompress."
